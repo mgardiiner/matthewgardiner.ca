@@ -3,7 +3,7 @@ import { ref, computed, onMounted } from "vue";
 
 definePageMeta({
   middleware: "iptv-auth",
-  layout: "minimal",
+  layout: "minimal", 
 });
 
 const route = useRoute();
