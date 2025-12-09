@@ -5,13 +5,18 @@ on:
     branches:
       - main
 
+permissions:
+  contents: write  # <-- allow pushing to gh-pages
+
 jobs:
   deploy:
     runs-on: ubuntu-latest
+
     steps:
       - uses: actions/checkout@v3
 
       - name: Setup Node
+      # use the same major version you use locally (18 or 20 are good)
         uses: actions/setup-node@v3
         with:
           node-version: 20
