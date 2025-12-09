@@ -1,0 +1,1 @@
+import{u as s}from"./70B3SHNF.js";import{g as n,c as r,a,b as c,p as m,q as p,o as l}from"./B9SbaO2N.js";const d=n({__name:"index",setup(i){const{projects:o}=s();return(u,e)=>{const t=p("ProjectList");return l(),r("section",null,[e[0]||(e[0]=a("h1",null,"Projects",-1)),c(t,{items:m(o)},null,8,["items"])])}}});export{d as default};
