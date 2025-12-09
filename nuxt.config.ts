@@ -1,9 +1,14 @@
 export default defineNuxtConfig({
+  srcDir: 'app/',
   ssr: false,
-  router: {
-    base: '/'
+
+  app: {
+    baseURL: '/',
   },
+
   nitro: {
-    preset: 'github-pages'
-  }
+    preset: 'github-pages',
+  },
+
+  modules: ['@nuxtjs/tailwindcss'],
 })

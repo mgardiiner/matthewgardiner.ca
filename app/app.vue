@@ -1,5 +1,5 @@
 <template>
-  <div>
-    Site Under Maintenance
-  </div>
+  <NuxtLayout>
+    <NuxtPage />
+  </NuxtLayout>
 </template>
