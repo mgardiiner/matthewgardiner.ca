@@ -1,5 +1,6 @@
 <template>
   <div>
-    Site Under Maintenance
+    <NuxtRouteAnnouncer />
+    <NuxtWelcome />
   </div>
 </template>
