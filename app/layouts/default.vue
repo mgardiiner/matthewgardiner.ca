@@ -1,6 +1,6 @@
 <template>
   <div class="min-h-screen flex flex-col">
-    <NavBar />
+    <Navbar />
 
     <main class="flex-1">
       <slot />
@@ -11,6 +11,6 @@
 </template>
 
 <script setup lang="ts">
-import NavBar from "~/components/common/NavBar.vue";
+import Navbar from "~/components/common/Navbar.vue";
 import SiteFooter from "~/components/common/SiteFooter.vue";
 </script>
