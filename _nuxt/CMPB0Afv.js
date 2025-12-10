@@ -1,0 +1,1 @@
+import{u as s}from"./70B3SHNF.js";import{g as n,c as r,a,b as c,q as m,s as l,o as p}from"./DDdGTNQA.js";const d=n({__name:"index",setup(i){const{projects:o}=s();return(u,e)=>{const t=l("ProjectList");return p(),r("section",null,[e[0]||(e[0]=a("h1",null,"Projects",-1)),c(t,{items:m(o)},null,8,["items"])])}}});export{d as default};
