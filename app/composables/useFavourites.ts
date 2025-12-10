@@ -1,3 +1,4 @@
+// app/composables/useFavourites.ts
 export const useFavourites = () => {
   const favs = useState<number[]>('movieFavourites', () => {
     if (process.client) {
@@ -17,8 +18,9 @@ export const useFavourites = () => {
     if (isFavourite(id)) {
       favs.value = favs.value.filter(x => x !== id)
     } else {
-      favs.value.push(id)
+      favs.value = [...favs.value, id]
     }
+
     if (process.client) {
       localStorage.setItem('movieFavourites', JSON.stringify(favs.value))
     }

@@ -1,36 +1,28 @@
 <script setup lang="ts">
 import { ref, onMounted, computed } from "vue";
+import type { VodCategory, VodStream, MovieRow } from "~/composables/useMovieLibrary";
 
 definePageMeta({
   middleware: "iptv-auth",
   layout: "minimal",
 });
 
-type VodCategory = {
-  category_id: string;
-  category_name: string;
-};
+type SortMode = "newest" | "rating" | "az";
 
-type VodStream = {
-  num: number;
-  name: string;
-  stream_type: "movie";
-  stream_id: number;
-  stream_icon?: string | null;
-  rating?: string;
-  rating_5based?: number;
-  tmdb?: string;
-  added?: string;
-  is_adult?: number;
-  category_id?: string;
-  container_extension?: string;
-};
+const { categories, rows, lastSync, loadFromCache } = useMovieLibrary();
+const { isFavourite, toggleFavourite, favs } = useFavourites();
+const { recentIds } = useRecentlyViewed();
 
-const { xtreamFetch } = useXtreamClient();
+const loading = ref(false);
+const error = ref<string | null>(null);
+const search = ref("");
+const sortMode = ref<SortMode>("newest");
 
-// ===== CATEGORY FILTERING =====
+// used by the "Suggested for you" skeleton section
+const suggestionsLoading = ref(true);
 
-// prefixes to completely hide (case-insensitive, startsWith)
+// ===== CATEGORY FILTERING (only for hiding blocked) =====
+
 const blockedPrefixes = [
   "SOCCER",
   "DE -",
@@ -59,6 +51,8 @@ const blockedPrefixes = [
   "BN -",
   "PK -",
   "BR -",
+  "PL -",
+  "EN - ITALIAN SUB ENG",
 ].map((s) => s.toLowerCase());
 
 const isBlockedCategory = (name: string) => {
@@ -66,167 +60,64 @@ const isBlockedCategory = (name: string) => {
   return blockedPrefixes.some((prefix) => lower.startsWith(prefix));
 };
 
-// service keyword groups (case-insensitive, contains)
-const netflixKeywords = ["netflix"].map((s) => s.toLowerCase());
-const amazonKeywords = ["amazon", "prime"].map((s) => s.toLowerCase());
-const disneyKeywords = ["disney"].map((s) => s.toLowerCase());
-const appleKeywords = ["apple+"].map((s) => s.toLowerCase());
-const discoveryKeywords = ["discovery+"].map((s) => s.toLowerCase());
-const paramountKeywords = ["paramount"].map((s) => s.toLowerCase());
-
-const categories = ref<VodCategory[]>([]);
-const movies = ref<VodStream[]>([]);
-const selectedCategoryId = ref<string | null>(null);
-const loading = ref(false);
-const error = ref<string | null>(null);
-
-// which "mode" is active: generic OR one of the services
-type SourceMode = "generic" | "netflix" | "amazon" | "disney" | "apple+" | "discovery+" | "paramount";
-const sourceMode = ref<SourceMode>("generic");
-
+// Only visible (non-blocked) categories, in original order
 const visibleCategories = computed(() =>
   categories.value.filter((c) => !isBlockedCategory(c.category_name))
 );
 
-const categoryMatches = (cat: VodCategory, keywords: string[]) => {
-  const lower = cat.category_name.toLowerCase();
-  return keywords.some((kw) => lower.includes(kw));
-};
+// ===== Rows in "sync order" =====
 
-const netflixCategories = computed(() =>
-  visibleCategories.value.filter((c) => categoryMatches(c, netflixKeywords))
-);
+// We keep the order of rows.value (which comes from syncFromXtream),
+// but filter out any whose category is blocked.
+const orderedRows = computed<MovieRow[]>(() => {
+  if (!rows.value.length) return [];
 
-const amazonCategories = computed(() =>
-  visibleCategories.value.filter((c) => categoryMatches(c, amazonKeywords))
-);
+  const visibleIds = new Set(visibleCategories.value.map((c) => c.category_id));
 
-const disneyCategories = computed(() =>
-  visibleCategories.value.filter((c) => categoryMatches(c, disneyKeywords))
-);
+  const visibleRows = rows.value.filter((row) =>
+    visibleIds.has(row.category.category_id)
+  );
 
-const appleCategories = computed(() =>
-  visibleCategories.value.filter((c) => c.category_name.includes("APPLE+"))
-);
+  // EN - rows (keep sync order)
+  const enRows = visibleRows.filter((row) =>
+    row.category.category_name.trim().toLowerCase().startsWith("en -")
+  );
 
-const discoveryCategories = computed(() =>
-  visibleCategories.value.filter((c) => c.category_name.includes("DISCOVERY+"))
-);
+  // Non-EN rows (keep sync order)
+  const otherRows = visibleRows.filter(
+    (row) => !row.category.category_name.trim().toLowerCase().startsWith("en -")
+  );
 
-const paramountCategories = computed(() =>
-  visibleCategories.value.filter((c) => c.category_name.includes("PARAMOUNT"))
-);
-
-// generic = everything *not* Netflix/Amazon/Disney and not blocked
-const genericCategories = computed(() =>
-  visibleCategories.value.filter(
-    (c) =>
-      !categoryMatches(c, netflixKeywords) &&
-      !categoryMatches(c, amazonKeywords) &&
-      !categoryMatches(c, disneyKeywords) &&
-      !categoryMatches(c, appleKeywords) &&
-      !categoryMatches(c, discoveryKeywords) &&
-      !categoryMatches(c, paramountKeywords)
-  )
-);
-
-// the list shown in the dropdown depends on the current sourceMode
-const currentCategoryList = computed(() => {
-  switch (sourceMode.value) {
-    case "netflix":
-      return netflixCategories.value;
-    case "amazon":
-      return amazonCategories.value;
-    case "disney":
-      return disneyCategories.value;
-    case "apple+":
-      return appleCategories.value;
-    case "discovery+":
-      return discoveryCategories.value;
-    case "paramount":
-      return paramountCategories.value;
-    case "generic":
-    default:
-      return genericCategories.value;
-  }
+  return [...enRows, ...otherRows];
 });
 
-const selectedCategory = computed(
-  () =>
-    visibleCategories.value.find((c) => c.category_id === selectedCategoryId.value) ||
-    null
-);
+// ===== Hero =====
 
-const loadCategories = async () => {
-  loading.value = true;
-  error.value = null;
-  try {
-    const data = await xtreamFetch<VodCategory[]>({
-      action: "get_vod_categories",
-    });
-
-    categories.value = data;
-
-    // after we have categories, pick an initial category for the current mode
-    await selectSourceMode("generic"); // default to generic EN-, PL-, etc.
-  } catch (err) {
-    console.error(err);
-    error.value = "Failed to load movie categories.";
-  } finally {
-    loading.value = false;
+const heroMovie = computed<VodStream | null>(() => {
+  for (const row of orderedRows.value) {
+    if (row.movies.length > 0) return row.movies[0];
   }
+  return null;
+});
+
+const heroPoster = computed(() => heroMovie.value?.stream_icon || null);
+const heroTitle = computed(() => heroMovie.value?.name ?? "");
+const heroId = computed(() => heroMovie.value?.stream_id ?? null);
+
+// ===== Helpers / sorting / suggestions =====
+
+const extractYearFromTitle = (name?: string): number | null => {
+  if (!name) return null;
+  const match = name.match(/\((\d{4})\)/);
+  if (!match) return null;
+  const year = Number(match[1]);
+  return Number.isNaN(year) ? null : year;
 };
 
-const loadMoviesForCategory = async (categoryId: string) => {
-  loading.value = true;
-  error.value = null;
-  try {
-    const data = await xtreamFetch<VodStream[]>({
-      action: "get_vod_streams",
-      category_id: categoryId,
-    });
-    movies.value = data;
-  } catch (err) {
-    console.error(err);
-    error.value = "Failed to load movies for this category.";
-  } finally {
-    loading.value = false;
-  }
-};
-
-const onCategoryChange = async (id: string) => {
-  if (!id) return;
-  selectedCategoryId.value = id;
-  await loadMoviesForCategory(id);
-};
-
-// when you click Netflix / Amazon / Disney buttons
-const selectSourceMode = async (mode: SourceMode) => {
-  sourceMode.value = mode;
-
-  const list = currentCategoryList.value;
-  if (!list.length) {
-    movies.value = [];
-    return;
-  }
-
-  // if previously selected category is still in this list, keep it
-  const existing = list.find((c) => c.category_id === selectedCategoryId.value);
-  const target = existing || list[0];
-
-  selectedCategoryId.value = target.category_id;
-  await loadMoviesForCategory(target.category_id);
-};
-
-// ===== MOVIE HELPERS =====
-
-const displayYear = (movie: VodStream) => {
-  const match = movie.name.match(/\((\d{4})\)/);
-  return match ? match[1] : "";
-};
-
-// use rating as-is (0–10)
 const ratingNumber = (movie: VodStream) => {
+  if (typeof movie.rating_5based === "number") {
+    return movie.rating_5based * 2;
+  }
   const r = Number(movie.rating);
   return Number.isNaN(r) ? 0 : r;
 };
@@ -237,295 +128,484 @@ const ratingBadgeClass = (rating: number) => {
   return "bg-gray-100 text-gray-600";
 };
 
-// ===== FILTERS =====
+const addedTimestamp = (movie: VodStream): number => {
+  const n = Number(movie.added);
+  if (!Number.isNaN(n) && n > 0) return n;
+  const year = extractYearFromTitle(movie.name);
+  if (!year) return 0;
+  return year * 1_000_000_000;
+};
 
-const search = ref("");
-const minRating = ref(0); // 0–10
-const yearFrom = ref<number | null>(null);
+const sortMovies = (list: VodStream[]): VodStream[] => {
+  const copy = list.slice();
+  switch (sortMode.value) {
+    case "newest":
+      copy.sort((a, b) => addedTimestamp(b) - addedTimestamp(a));
+      break;
+    case "rating":
+      copy.sort((a, b) => ratingNumber(b) - ratingNumber(a));
+      break;
+    case "az":
+      copy.sort((a, b) =>
+        (a.name || "").localeCompare(b.name || "", undefined, {
+          sensitivity: "base",
+        })
+      );
+      break;
+  }
+  return copy;
+};
 
-const filteredMovies = computed(() => {
-  return movies.value.filter((movie) => {
-    const name = movie.name?.toLowerCase() || "";
-    const searchMatch = !search.value || name.includes(search.value.toLowerCase());
+const filteredRowMovies = (movies: VodStream[]) => {
+  let list = movies;
+  if (search.value.trim()) {
+    const q = search.value.toLowerCase();
+    list = list.filter((m) => m.name?.toLowerCase().includes(q));
+  }
+  return sortMovies(list);
+};
 
-    const rating10 = ratingNumber(movie);
-    const ratingMatch = rating10 >= minRating.value;
+// ===== Suggestions =====
 
-    let yearMatch = true;
-    if (yearFrom.value) {
-      const m = movie.name.match(/\((\d{4})\)/);
-      const year = m ? Number(m[1]) : null;
-      yearMatch = !year || year >= yearFrom.value;
+const buildSuggestions = (rowData: MovieRow[]): VodStream[] => {
+  const movieIndex = new Map<
+    number,
+    { movie: VodStream; category: VodCategory | null }
+  >();
+
+  for (const row of rowData) {
+    for (const m of row.movies) {
+      if (!movieIndex.has(m.stream_id)) {
+        movieIndex.set(m.stream_id, { movie: m, category: row.category });
+      }
+    }
+  }
+
+  const favSet = new Set<number>(favs.value);
+  const recentSet = new Set<number>(recentIds.value);
+
+  const favCategoryCounts = new Map<string, number>();
+  const recentCategoryCounts = new Map<string, number>();
+
+  const inc = (map: Map<string, number>, key?: string) => {
+    if (!key) return;
+    map.set(key, (map.get(key) || 0) + 1);
+  };
+
+  for (const id of favs.value) {
+    const entry = movieIndex.get(id);
+    if (entry?.category?.category_id) {
+      inc(favCategoryCounts, entry.category.category_id);
+    }
+  }
+
+  for (const id of recentIds.value) {
+    const entry = movieIndex.get(id);
+    if (entry?.category?.category_id) {
+      inc(recentCategoryCounts, entry.category.category_id);
+    }
+  }
+
+  const isEnCategoryName = (name?: string) =>
+    !!name && name.trim().toLowerCase().startsWith("en -");
+
+  const maxRecentRank = Math.max(recentIds.value.length, 1);
+  const nowYear = new Date().getFullYear();
+
+  const scored: { movie: VodStream; score: number }[] = [];
+
+  for (const [id, { movie, category }] of movieIndex.entries()) {
+    let score = 0;
+
+    // rating
+    let r10 = ratingNumber(movie);
+    if (r10 < 0) r10 = 0;
+    if (r10 > 10) r10 = 10;
+    score += (r10 / 10) * 0.35;
+
+    // favourite
+    if (favSet.has(id)) {
+      score += 0.5;
     }
 
-    return searchMatch && ratingMatch && yearMatch;
-  });
+    // category affinity
+    if (category?.category_id) {
+      const favWeight = favCategoryCounts.get(category.category_id) || 0;
+      const recentWeight = recentCategoryCounts.get(category.category_id) || 0;
+      score += Math.min(favWeight * 0.15, 0.6);
+      score += Math.min(recentWeight * 0.1, 0.4);
+    }
+
+    // viewing recency
+    if (recentSet.has(id)) {
+      const idx = recentIds.value.indexOf(id);
+      const recencyScore = (maxRecentRank - idx) / maxRecentRank;
+      score += recencyScore * 0.2;
+    }
+
+    // year-based newness
+    const year = extractYearFromTitle(movie.name);
+    if (year) {
+      const age = nowYear - year;
+
+      if (age <= 1) score += 0.4;
+      else if (age <= 3) score += 0.3;
+      else if (age <= 5) score += 0.2;
+      else if (age <= 10) score += 0.1;
+      else score -= 0.05;
+    }
+
+    // EN bump
+    if (category?.category_name && isEnCategoryName(category.category_name)) {
+      score += 0.1;
+    }
+
+    // penalty for no rating & no art
+    if (!movie.rating && !movie.stream_icon) {
+      score -= 0.1;
+    }
+
+    if (score < 0) score = 0;
+    scored.push({ movie, score });
+  }
+
+  scored.sort((a, b) => b.score - a.score);
+  return scored.map((s) => s.movie);
+};
+
+const suggestions = computed(() => {
+  if (!orderedRows.value.length) return [];
+  const base = buildSuggestions(orderedRows.value);
+  const q = search.value.trim().toLowerCase();
+  const filtered = q ? base.filter((m) => m.name?.toLowerCase().includes(q)) : base;
+  return filtered.slice(0, 24);
 });
 
-onMounted(() => {
-  loadCategories();
+// ===== Lifecycle =====
+
+onMounted(async () => {
+  loading.value = true;
+  error.value = null;
+  suggestionsLoading.value = true;
+
+  await loadFromCache();
+
+  if (!rows.value.length) {
+    error.value =
+      "No movie library synced yet. Go to the Dashboard and press “Sync Library”.";
+  }
+
+  loading.value = false;
+  suggestionsLoading.value = false;
 });
 </script>
 
 <template>
   <div
-    class="min-h-screen bg-gradient-to-b from-slate-900 via-slate-950 to-slate-900 text-slate-100"
+    class="min-h-screen bg-gradient-to-b from-slate-950 via-slate-900 to-slate-950 text-slate-100"
   >
-    <div class="max-w-6xl mx-auto px-4 pb-12 pt-6">
-      <!-- header row -->
-      <div class="flex items-center justify-between mb-6">
+    <div class="max-w-6xl mx-auto px-4 pb-12 pt-4 space-y-8">
+      <!-- top bar -->
+      <header class="flex items-center justify-between">
         <div>
           <h1 class="text-3xl font-semibold tracking-tight">Movies</h1>
           <p class="text-sm text-slate-400 mt-1">
-            {{ selectedCategory?.category_name || "Loading categories…" }}
+            Browse by service, EN categories, and smart suggestions.
           </p>
         </div>
 
-        <NuxtLink
-          to="/iptv/dashboard"
-          class="text-sm text-sky-300 hover:text-sky-200 underline underline-offset-2"
-        >
-          Back to dashboard
-        </NuxtLink>
-      </div>
+        <div class="flex items-center gap-3">
+          <input
+            v-model="search"
+            type="text"
+            placeholder="Search titles..."
+            class="bg-slate-900/80 border border-slate-700 rounded-full px-3 py-1.5 text-xs text-slate-100 focus:outline-none focus:ring-2 focus:ring-sky-500 focus:border-sky-500 w-40 sm:w-56"
+          />
+          <!-- <NuxtLink
+            to="/iptv/dashboard"
+            class="text-sm text-sky-300 hover:text-sky-200 underline underline-offset-2"
+          >
+            Dashboard
+          </NuxtLink> -->
+          <select
+            v-model="sortMode"
+            class="bg-slate-900/80 border border-slate-700 rounded-full px-3 py-1.5 text-xs text-slate-100 focus:outline-none focus:ring-2 focus:ring-sky-500 focus:border-sky-500"
+          >
+            <option value="newest">Newest</option>
+            <option value="rating">Rating</option>
+            <option value="az">A–Z</option>
+          </select>
+        </div>
+      </header>
 
-      <!-- controls -->
-      <div
-        class="mb-6 flex flex-col gap-3 bg-slate-900/60 border border-slate-700/60 rounded-xl px-4 py-3 backdrop-blur"
+      <!-- hero -->
+      <section
+        v-if="heroMovie"
+        class="relative w-full overflow-hidden rounded-3xl border border-slate-800 bg-slate-900/80 min-h-[220px]"
       >
-        <!-- source mode buttons -->
-        <div class="flex flex-wrap items-center gap-2">
-          <span class="text-xs font-semibold uppercase tracking-wide text-slate-400">
-            Source
-          </span>
-
-          <button
-            type="button"
-            @click="selectSourceMode('generic')"
-            :class="[
-              'px-3 py-1.5 rounded-full text-xs font-medium border transition',
-              sourceMode === 'generic'
-                ? 'bg-sky-600 border-sky-500 text-white'
-                : 'bg-slate-800 border-slate-700 text-slate-200 hover:border-sky-500',
-            ]"
-          >
-            Generic (EN / PL / etc.)
-          </button>
-
-          <button
-            type="button"
-            @click="selectSourceMode('netflix')"
-            :class="[
-              'px-3 py-1.5 rounded-full text-xs font-medium border transition',
-              sourceMode === 'netflix'
-                ? 'bg-sky-600 border-sky-500 text-white'
-                : 'bg-slate-800 border-slate-700 text-slate-200 hover:border-sky-500',
-            ]"
-          >
-            Netflix
-          </button>
-
-          <button
-            type="button"
-            @click="selectSourceMode('amazon')"
-            :class="[
-              'px-3 py-1.5 rounded-full text-xs font-medium border transition',
-              sourceMode === 'amazon'
-                ? 'bg-sky-600 border-sky-500 text-white'
-                : 'bg-slate-800 border-slate-700 text-slate-200 hover:border-sky-500',
-            ]"
-          >
-            Amazon
-          </button>
-
-          <button
-            type="button"
-            @click="selectSourceMode('disney')"
-            :class="[
-              'px-3 py-1.5 rounded-full text-xs font-medium border transition',
-              sourceMode === 'disney'
-                ? 'bg-sky-600 border-sky-500 text-white'
-                : 'bg-slate-800 border-slate-700 text-slate-200 hover:border-sky-500',
-            ]"
-          >
-            Disney
-          </button>
-
-          <button
-            type="button"
-            @click="selectSourceMode('apple+')"
-            :class="[
-              'px-3 py-1.5 rounded-full text-xs font-medium border transition',
-              sourceMode === 'apple+'
-                ? 'bg-sky-600 border-sky-500 text-white'
-                : 'bg-slate-800 border-slate-700 text-slate-200 hover:border-sky-500',
-            ]"
-          >
-            Apple+
-          </button>
-
-          <button
-            type="button"
-            @click="selectSourceMode('discovery+')"
-            :class="[
-              'px-3 py-1.5 rounded-full text-xs font-medium border transition',
-              sourceMode === 'discovery+'
-                ? 'bg-sky-600 border-sky-500 text-white'
-                : 'bg-slate-800 border-slate-700 text-slate-200 hover:border-sky-500',
-            ]"
-          >
-            Discovery+
-          </button>
-
-          <button
-            type="button"
-            @click="selectSourceMode('paramount')"
-            :class="[
-              'px-3 py-1.5 rounded-full text-xs font-medium border transition',
-              sourceMode === 'paramount'
-                ? 'bg-sky-600 border-sky-500 text-white'
-                : 'bg-slate-800 border-slate-700 text-slate-200 hover:border-sky-500',
-            ]"
-          >
-            Paramount
-          </button>
+        <div class="absolute inset-0 overflow-hidden">
+          <img
+            v-if="heroPoster"
+            v-lazy="heroPoster"
+            :alt="heroTitle"
+            class="w-full h-full object-cover opacity-40"
+          />
+          <div
+            class="absolute inset-0 bg-gradient-to-r from-slate-950 via-slate-950/70 to-transparent"
+          />
         </div>
 
+        <div
+          class="relative z-10 flex flex-col sm:flex-row items-center sm:items-end px-5 py-6 gap-4"
+        >
+          <div class="flex-1 space-y-3">
+            <p class="text-xs uppercase tracking-[0.2em] text-sky-300/80">Featured</p>
+            <h2 class="text-2xl sm:text-3xl font-bold leading-tight max-w-xl">
+              {{ heroTitle }}
+            </h2>
+            <p class="text-xs text-slate-300 max-w-md line-clamp-2">
+              Click through for details and a launchable stream URL in your favourite
+              external player.
+            </p>
 
-
-        <!-- category dropdown + filters -->
-        <div class="flex flex-wrap gap-4 items-center">
-          <!-- category dropdown that changes with sourceMode -->
-          <div class="flex items-center gap-2">
-            <span class="text-xs font-semibold uppercase tracking-wide text-slate-400">
-              Category
-            </span>
-            <select
-              v-if="currentCategoryList.length"
-              :value="selectedCategoryId || ''"
-              @change="onCategoryChange(($event.target as HTMLSelectElement).value)"
-              class="bg-slate-800/80 border border-slate-700 rounded-full px-3 py-1.5 text-xs text-slate-100 focus:outline-none focus:ring-2 focus:ring-sky-500 focus:border-sky-500"
-            >
-              <option
-                v-for="cat in currentCategoryList"
-                :key="cat.category_id"
-                :value="cat.category_id"
+            <div class="flex flex-wrap gap-2 pt-1">
+              <NuxtLink
+                v-if="heroId"
+                :to="`/iptv/movies/${heroId}`"
+                class="inline-flex items-center justify-center px-4 py-1.5 rounded-full bg-sky-600 hover:bg-sky-500 text-xs font-semibold text-white shadow-sm"
               >
-                {{ cat.category_name }}
-              </option>
-            </select>
-            <span v-else class="text-xs text-slate-500">
-              No categories for this source.
-            </span>
-          </div>
-
-          <!-- search + rating filters -->
-          <div class="flex flex-wrap gap-3 items-center ml-auto">
-            <!-- search -->
-            <div class="flex items-center gap-2">
-              <span class="text-xs font-semibold uppercase tracking-wide text-slate-400">
-                Search
-              </span>
-              <input
-                v-model="search"
-                type="text"
-                placeholder="Title…"
-                class="bg-slate-900/70 border border-slate-700 rounded-full px-3 py-1.5 text-xs text-slate-100 focus:outline-none focus:ring-2 focus:ring-sky-500 focus:border-sky-500"
-              />
-            </div>
-
-            <!-- rating -->
-            <div class="flex items-center gap-2">
-              <span class="text-xs font-semibold uppercase tracking-wide text-slate-400">
-                Rating
-              </span>
-              <select
-                v-model.number="minRating"
-                class="bg-slate-900/70 border border-slate-700 rounded-full px-2 py-1.5 text-xs text-slate-100 focus:outline-none focus:ring-2 focus:ring-sky-500 focus:border-sky-500"
-              >
-                <option :value="0">Any</option>
-                <option :value="5">5+</option>
-                <option :value="6">6+</option>
-                <option :value="7">7+</option>
-                <option :value="8">8+</option>
-              </select>
+                Open details
+              </NuxtLink>
             </div>
           </div>
 
-          <!-- counts -->
-          <p
-            v-if="movies.length"
-            class="w-full text-xs text-slate-500 mt-2 flex justify-end"
+          <div
+            class="hidden sm:block w-28 h-40 rounded-2xl overflow-hidden border border-slate-700 shadow-lg"
           >
-            Showing
-            <span class="font-medium text-slate-200 mx-1">
-              {{ filteredMovies.length }}
-            </span>
-            of
-            <span class="font-medium text-slate-200 mx-1">
-              {{ movies.length }}
-            </span>
-            movies
-          </p>
+            <img
+              v-if="heroPoster"
+              v-lazy="heroPoster"
+              :alt="heroTitle"
+              class="w-full h-full object-cover"
+            />
+          </div>
         </div>
-      </div>
+      </section>
 
-      <!-- messages -->
-      <p v-if="error" class="text-red-400 mb-4">
+      <!-- status -->
+      <p v-if="error" class="text-red-400 text-sm">
         {{ error }}
       </p>
 
-      <p v-if="loading" class="text-slate-400 mb-4">Loading movies…</p>
+      <!-- suggestions loading placeholder -->
+      <section v-if="suggestionsLoading" class="space-y-2">
+        <div class="flex items-baseline justify-between">
+          <h3 class="text-base font-semibold">Suggested for you</h3>
+          <p class="text-[11px] text-slate-500">Building suggestions…</p>
+        </div>
 
-      <!-- grid -->
-      <div
-        v-if="!loading && filteredMovies.length"
-        class="grid gap-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 xl:grid-cols-8"
-      >
-        <NuxtLink
-          v-for="movie in filteredMovies"
-          :key="movie.stream_id"
-          :to="`/iptv/movies/${movie.stream_id}`"
-          class="group bg-slate-900/70 border border-slate-800 rounded-xl overflow-hidden hover:border-sky-500/70 transition-all duration-200"
-        >
-          <!-- poster -->
-          <div class="relative w-full overflow-hidden">
-            <img
-              v-if="movie.stream_icon"
-              :src="movie.stream_icon"
-              :alt="movie.name"
-              class="w-full aspect-[4/5] object-cover transition-transform duration-300 group-hover:scale-105"
-              loading="lazy"
-            />
+        <div class="relative -mx-4 px-4">
+          <div class="flex gap-2 overflow-x-hidden pb-2">
             <div
-              v-else
-              class="w-full aspect-[4/5] bg-slate-800 flex items-center justify-center text-slate-500 text-[10px]"
+              v-for="n in 8"
+              :key="n"
+              class="flex-none w-[120px] sm:w-[140px] md:w-[160px]"
             >
-              No Art
-            </div>
-
-            <div
-              v-if="ratingNumber(movie) > 0"
-              class="absolute top-1 left-1 text-[10px] font-semibold px-1.5 py-0.5 rounded-full shadow"
-              :class="ratingBadgeClass(ratingNumber(movie))"
-            >
-              ★ {{ ratingNumber(movie).toFixed(1) }}
+              <div
+                class="w-full h-[180px] sm:h-[200px] md:h-[220px] rounded-xl bg-slate-800/80 animate-pulse"
+              />
+              <div class="mt-1.5 h-3 rounded bg-slate-800/80 animate-pulse" />
             </div>
           </div>
+        </div>
+      </section>
 
-          <!-- text -->
-          <div class="p-2 space-y-1">
-            <h2 class="text-[11px] font-semibold leading-snug line-clamp-2 text-slate-50">
-              {{ movie.name }}
-            </h2>
-            <div class="flex flex-wrap items-center gap-1 text-[10px] text-slate-400">
-              <span v-if="displayYear(movie)">{{ displayYear(movie) }}</span>
+      <!-- suggestions -->
+      <section v-if="!suggestionsLoading && suggestions.length" class="space-y-2">
+        <div class="flex items-baseline justify-between">
+          <h3 class="text-base font-semibold">Suggested for you</h3>
+          <p class="text-[11px] text-slate-500">
+            Based on what you've watched and favourited
+          </p>
+        </div>
+
+        <div class="relative -mx-4 px-4">
+          <div
+            class="flex gap-2 overflow-x-auto pb-2 scrollbar-thin scrollbar-thumb-slate-700 scrollbar-track-slate-900"
+          >
+            <NuxtLink
+              v-for="movie in suggestions"
+              :key="movie.stream_id"
+              :to="`/iptv/movies/${movie.stream_id}`"
+              class="group flex-none w-[120px] sm:w-[140px] md:w-[160px]"
+            >
+              <div
+                class="relative rounded-xl overflow-hidden bg-slate-900 border border-slate-800 transition-transform duration-200 group-hover:-translate-y-1 group-hover:border-sky-500/70"
+              >
+                <img
+                  v-if="movie.stream_icon"
+                  v-lazy="movie.stream_icon"
+                  :alt="movie.name"
+                  class="w-full h-[180px] sm:h-[200px] md:h-[220px] object-cover transition-transform duration-200 group-hover:scale-105"
+                />
+                <div
+                  v-else
+                  class="w-full h-[180px] sm:h-[200px] md:h-[220px] bg-slate-800 flex items-center justify-center text-slate-500 text-[10px]"
+                >
+                  No Art
+                </div>
+
+                <!-- favourite star -->
+                <button
+                  type="button"
+                  @click.stop="toggleFavourite(movie.stream_id)"
+                  class="absolute top-1 right-1 z-10 rounded-full bg-slate-900/80 p-1 shadow border border-slate-700/80 hover:border-amber-400"
+                >
+                  <span
+                    :class="[
+                      'text-[11px]',
+                      isFavourite(movie.stream_id) ? 'text-amber-400' : 'text-slate-400',
+                    ]"
+                  >
+                    ★
+                  </span>
+                </button>
+
+                <!-- rating -->
+                <div
+                  v-if="ratingNumber(movie) > 0"
+                  class="absolute top-1 left-1 text-[10px] font-semibold px-1.5 py-0.5 rounded-full shadow"
+                  :class="ratingBadgeClass(ratingNumber(movie))"
+                >
+                  ★ {{ ratingNumber(movie).toFixed(1) }}
+                </div>
+
+                <div
+                  class="absolute inset-x-0 bottom-0 h-16 bg-gradient-to-t from-black/80 via-black/20 to-transparent pointer-events-none"
+                />
+              </div>
+
+              <div class="mt-1.5 space-y-0.5">
+                <p
+                  class="text-[11px] font-medium leading-snug line-clamp-2 text-slate-50"
+                >
+                  {{ movie.name }}
+                </p>
+              </div>
+            </NuxtLink>
+          </div>
+        </div>
+      </section>
+
+      <!-- skeleton rows while movies are loading -->
+      <section v-if="loading && !orderedRows.length" class="space-y-6">
+        <div v-for="rowIndex in 4" :key="rowIndex" class="space-y-2">
+          <div class="flex items-baseline justify-between">
+            <div class="h-4 w-32 bg-slate-800/80 rounded animate-pulse" />
+            <div class="h-3 w-16 bg-slate-800/80 rounded animate-pulse" />
+          </div>
+
+          <div class="relative -mx-4 px-4">
+            <div class="flex gap-2 overflow-x-hidden pb-2">
+              <div
+                v-for="cardIndex in 8"
+                :key="cardIndex"
+                class="flex-none w-[120px] sm:w-[140px] md:w-[160px]"
+              >
+                <div
+                  class="w-full h-[180px] sm:h-[200px] md:h-[220px] rounded-xl bg-slate-800/80 animate-pulse"
+                />
+                <div class="mt-1.5 h-3 rounded bg-slate-800/80 animate-pulse" />
+              </div>
             </div>
           </div>
-        </NuxtLink>
-      </div>
+        </div>
+      </section>
 
-      <p v-else-if="!loading" class="text-slate-400">No movies match your filters.</p>
+      <!-- rows -->
+      <section v-if="!loading && orderedRows.length" class="space-y-6">
+        <div v-for="row in orderedRows" :key="row.category.category_id" class="space-y-2">
+          <div class="flex items-baseline justify-between">
+            <h3 class="text-base font-semibold">
+              {{ row.category.category_name }}
+            </h3>
+            <p class="text-[11px] text-slate-500">
+              {{ filteredRowMovies(row.movies).length }} titles
+            </p>
+          </div>
+
+          <div class="relative -mx-4 px-4">
+            <div
+              class="flex gap-2 overflow-x-auto pb-2 scrollbar-thin scrollbar-thumb-slate-700 scrollbar-track-slate-900"
+            >
+              <NuxtLink
+                v-for="movie in filteredRowMovies(row.movies)"
+                :key="movie.stream_id"
+                :to="`/iptv/movies/${movie.stream_id}`"
+                class="group flex-none w-[120px] sm:w-[140px] md:w-[160px]"
+              >
+                <div
+                  class="relative rounded-xl overflow-hidden bg-slate-900 border border-slate-800 transition-transform duration-200 group-hover:-translate-y-1 group-hover:border-sky-500/70"
+                >
+                  <img
+                    v-if="movie.stream_icon"
+                    v-lazy="movie.stream_icon"
+                    :alt="movie.name"
+                    class="w-full h-[180px] sm:h-[200px] md:h-[220px] object-cover transition-transform duration-200 group-hover:scale-105"
+                  />
+                  <div
+                    v-else
+                    class="w-full h-[180px] sm:h-[200px] md:h-[220px] bg-slate-800 flex items-center justify-center text-slate-500 text-[10px]"
+                  >
+                    No Art
+                  </div>
+
+                  <!-- favourite star -->
+                  <button
+                    type="button"
+                    @click.stop="toggleFavourite(movie.stream_id)"
+                    class="absolute top-1 right-1 z-10 rounded-full bg-slate-900/80 p-1 shadow border border-slate-700/80 hover:border-amber-400"
+                  >
+                    <span
+                      :class="[
+                        'text-[11px]',
+                        isFavourite(movie.stream_id)
+                          ? 'text-amber-400'
+                          : 'text-slate-400',
+                      ]"
+                    >
+                      ★
+                    </span>
+                  </button>
+
+                  <!-- rating -->
+                  <div
+                    v-if="ratingNumber(movie) > 0"
+                    class="absolute top-1 left-1 text-[10px] font-semibold px-1.5 py-0.5 rounded-full shadow"
+                    :class="ratingBadgeClass(ratingNumber(movie))"
+                  >
+                    ★ {{ ratingNumber(movie).toFixed(1) }}
+                  </div>
+
+                  <div
+                    class="absolute inset-x-0 bottom-0 h-16 bg-gradient-to-t from-black/80 via-black/20 to-transparent pointer-events-none"
+                  />
+                </div>
+
+                <div class="mt-1.5 space-y-0.5">
+                  <p
+                    class="text-[11px] font-medium leading-snug line-clamp-2 text-slate-50"
+                  >
+                    {{ movie.name }}
+                  </p>
+                </div>
+              </NuxtLink>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <p v-else-if="!loading" class="text-slate-400 text-sm">No movies available.</p>
     </div>
   </div>
 </template>

@@ -6,17 +6,37 @@ export type XtreamCreds = {
 }
 
 export const useXtreamAuth = () => {
-  // shared state across the app
-  const creds = useState<XtreamCreds | null>('xtreamCreds', () => null)
+  // Cookie to persist across refreshes
+  const credsCookie = useCookie<XtreamCreds | null>('xtream_creds', {
+    default: () => null,
+    sameSite: 'lax',
+  })
+
+  // In-app reactive state, initialised from cookie
+  const creds = useState<XtreamCreds | null>('xtreamCreds', () => credsCookie.value)
+
+  // Keep state + cookie in sync
+  watch(
+    creds,
+    (val) => {
+      credsCookie.value = val
+    },
+    { deep: true }
+  )
 
   const isLoggedIn = computed(() => !!creds.value)
 
   function login(newCreds: XtreamCreds) {
-    creds.value = newCreds
+    creds.value = {
+      serverUrl: newCreds.serverUrl.trim().replace(/\/+$/, ''),
+      username: newCreds.username.trim(),
+      password: newCreds.password,
+    }
   }
 
   function logout() {
     creds.value = null
+    credsCookie.value = null
   }
 
   return { creds, isLoggedIn, login, logout }
