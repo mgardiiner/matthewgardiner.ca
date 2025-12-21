@@ -1,1 +1,0 @@
-function o(){const t=[{slug:"trendhunter-dashboard",title:"Trend Hunter Dashboard",description:"Internal tooling for insight tracking.",url:"https://trendhunter.com/..."}];function n(r){return{project:t.find(e=>e.slug===r)||null}}return{projects:t,getBySlug:n}}export{o as u};

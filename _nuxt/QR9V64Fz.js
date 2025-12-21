@@ -1,1 +1,0 @@
-import{_ as s,c as t,o as c,N as n}from"./BdMwDeeB.js";const o={},a={class:"min-h-screen bg-slate-950 text-slate-100"};function r(e,l){return c(),t("div",a,[n(e.$slots,"default")])}const i=s(o,[["render",r]]);export{i as default};
