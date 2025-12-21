@@ -1,16 +1,16 @@
 <template>
-  <div class="min-h-screen flex flex-col">
-    <Navbar />
-
-    <main class="flex-1">
+  <div
+    class="min-h-screen bg-slate-950 text-slate-100 [--accent:#22d3ee] [--accent2:#a78bfa]"
+  >
+    <LandingHeader />
+    <main>
       <slot />
     </main>
-
     <SiteFooter />
   </div>
 </template>
 
-<script setup lang="ts">
-import Navbar from "~/components/common/Navbar.vue";
-import SiteFooter from "~/components/common/SiteFooter.vue";
+<script setup>
+import LandingHeader from "~/components/home/LandingHeader.vue";
+import SiteFooter from "~/components/home/SiteFooter.vue";
 </script>
