@@ -1,6 +1,6 @@
 // composables/useMovieLibrary.ts
 import { ref } from "vue";
-import { saveFullLibrary, loadFullLibraryFromDB } from "./movieDb";
+import { saveFullLibrary, loadFullLibraryFromDB } from "~/utils/movieDb";
 
 export type VodCategory = {
   category_id: string;

@@ -1,21 +1,36 @@
 <script setup>
+import { onMounted } from "vue";
+
 definePageMeta({
   layout: "default",
 });
 
-import HeroSection from "~/components/home/HeroSection.vue";
-import FeaturedProjects from "~/components/home/FeaturedProjects.vue";
-import ServicesRow from "~/components/home/ServicesRow.vue";
-import ProofSection from "~/components/home/ProofSection.vue";
-import AboutTeaser from "~/components/home/AboutTeaser.vue";
-import ContactSection from "~/components/home/ContactSection.vue";
+onMounted(() => {
+  if (typeof IntersectionObserver === "undefined") return;
+
+  const targets = document.querySelectorAll(".fade-up");
+  if (!targets.length) return;
+
+  const observer = new IntersectionObserver(
+    (entries) => {
+      entries.forEach((entry) => {
+        if (entry.isIntersecting) {
+          entry.target.classList.add("is-visible");
+          observer.unobserve(entry.target);
+        }
+      });
+    },
+    { threshold: 0.12 }
+  );
+
+  targets.forEach((el) => observer.observe(el));
+});
 </script>
 
 <template>
   <HeroSection />
-      <FeaturedProjects />
-  <ServicesRow />
-  <ProofSection />
-  <AboutTeaser />
-  <ContactSection />
+  <AboutSection class="fade-up" />
+  <FeaturedProjects class="fade-up delay-1" />
+  <TestimonialsSection class="fade-up delay-1" />
+  <ContactSection class="fade-up" />
 </template>
