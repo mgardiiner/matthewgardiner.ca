@@ -1,1 +1,0 @@
-import{a as c}from"./Dq__X1ZS.js";const o=()=>{const t=c("recentMovies",()=>{try{const e=localStorage.getItem("recentMovies");return e?JSON.parse(e):[]}catch{return[]}return[]});return{recentIds:t,addRecent:e=>{const r=t.value.filter(n=>n!==e);r.unshift(e),t.value=r.slice(0,50),localStorage.setItem("recentMovies",JSON.stringify(t.value))}}};export{o as u};
